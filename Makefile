@@ -1,5 +1,5 @@
 COMPOSE = docker compose -f srcs/docker-compose.yml
-DATA = /home/mpoirier/DATA
+DATA = /home/mpoirier/data 
 
 all:
 	mkdir -p $(DATA)/mariadb $(DATA)/wordpress
