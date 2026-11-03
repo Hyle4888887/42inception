@@ -27,7 +27,7 @@ services:
     volumes:
       - wordpress:/var/www/html
     networks:
-      inception
+      - inception
     restart: always
 
   nginx:
