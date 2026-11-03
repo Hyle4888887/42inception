@@ -14,7 +14,7 @@ services:
     restart: always
 
   wordpress:
-    build: .:requirements/wordpress
+    build: ./requirements/wordpress
     image: wordpress
     container_name: wordpress
     env_file: .env
