@@ -12,7 +12,7 @@ clean: down
 	docker system prune -af
 
 fclean: clean
-	docker volume rm -rf $$(docker volume ls -q) 2>/dev/null || true
+	docker volume rm -f $$(docker volume ls -q) 2>/dev/null || true
 	sudo rm -rf $(DATA)
 
 re: fclean all
