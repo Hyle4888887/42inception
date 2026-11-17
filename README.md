@@ -1,125 +1,165 @@
+*This project has been created as part of the 42 curriculum by mpoirier.*
+
 # Inception
 
-Projet système de l'école 42 : mise en place d'une petite infrastructure conteneurisée avec Docker, orchestrée par `docker-compose`, entièrement construite « from scratch » (pas d'images officielles toutes faites, chaque service part d'une image de base type `alpine` ou `debian`).
+## Description
 
-## Objectif
+Inception is a 42 system administration project: build a small web infrastructure with Docker, orchestrated by Docker Compose, entirely from scratch. No prebuilt service images are used: every service has its own `Dockerfile` built from `debian:bookworm`.
 
-Reproduire une infrastructure web classique composée de plusieurs services isolés dans des conteneurs distincts, communiquant entre eux via un réseau Docker dédié, avec persistance des données via des volumes.
-
-## Architecture
+The stack is made of three isolated containers:
 
 ```
-                        ┌────────────────────┐
-                        │       NGINX         │  :443 (TLS only)
-                        └─────────┬───────────┘
-                                  │
-                        ┌─────────▼───────────┐
-                        │      WordPress       │  (php-fpm)
-                        └─────────┬───────────┘
-                                  │
-                        ┌─────────▼───────────┐
-                        │      MariaDB         │
-                        └──────────────────────┘
+                  ┌────────────────────┐
+   https :443 ──► │       NGINX        │  TLS 1.2 / 1.3 only
+                  └─────────┬──────────┘
+                            │ FastCGI :9000
+                  ┌─────────▼──────────┐
+                  │     WordPress      │  php-fpm (no web server inside)
+                  └─────────┬──────────┘
+                            │ :3306
+                  ┌─────────▼──────────┐
+                  │      MariaDB       │
+                  └────────────────────┘
 ```
 
-Tous les conteneurs sont reliés par un réseau Docker interne (`inception_network` ou équivalent) et communiquent par leur nom de service (résolution DNS interne de Docker Compose).
+| Service   | Role                                              | Base image        |
+|-----------|---------------------------------------------------|-------------------|
+| NGINX     | Single entry point, HTTPS only (port 443)         | `debian:bookworm` |
+| WordPress | PHP-FPM application, installed with WP-CLI        | `debian:bookworm` |
+| MariaDB   | Database for WordPress                            | `debian:bookworm` |
 
-## Services
+Design choices:
+- Each container runs its main process as PID 1 in the foreground (`nginx -g "daemon off;"`, `php-fpm8.2 -F`, `mysqld`): no `tail -f` or `sleep infinity` hacks.
+- NGINX is the only service publishing a port. MariaDB and PHP-FPM are reachable only through the internal Docker network.
+- Passwords are provided through Docker secrets; non-sensitive settings through `.env`.
+- Two persistent volumes (database, WordPress files) stored under `DATA_PATH` on the host.
+- `restart: always` restarts containers after a crash.
 
-| Service   | Rôle                                              | Image de base       |
-|-----------|---------------------------------------------------|----------------------|
-| NGINX     | Reverse proxy, seul point d'entrée, TLS (v1.2/1.3) | `debian:bullseye` / `alpine` |
-| WordPress | Application PHP-FPM (sans nginx intégré)           | `debian:bullseye` / `alpine` |
-| MariaDB   | Base de données pour WordPress                     | `debian:bullseye` / `alpine` |
-
-Chaque service possède son propre `Dockerfile` dans `srcs/requirements/<service>/`.
-
-## Arborescence
+## Project structure
 
 ```
 .
 ├── Makefile
-├── secrets/
-│   ├── credentials.txt
+├── README.md
+├── USER_DOC.md
+├── DEV_DOC.md
+├── secrets/                  # not included in git
 │   ├── db_password.txt
-│   └── db_root_password.txt
-├── .env
+│   ├── db_root_password.txt
+│   ├── wp_admin_password.txt
+│   └── wp_user_password.txt
 └── srcs/
+    ├── .env.                 # not included in git
     ├── docker-compose.yml
     └── requirements/
-        ├── nginx/
-        │   ├── Dockerfile
-        │   ├── conf/
-        │   └── tools/
-        ├── wordpress/
-        │   ├── Dockerfile
-        │   ├── conf/
-        │   └── tools/
-        └── mariadb/
-            ├── Dockerfile
-            ├── conf/
-            └── tools/
+        ├── mariadb/   (Dockerfile, conf/, tools/)
+        ├── wordpress/ (Dockerfile, conf/, tools/)
+        ├── nginx/     (Dockerfile, conf/)
+        └── bonus/
 ```
 
-## Variables d'environnement (`.env`)
+## Instructions
+
+### Prerequisites
+
+- Docker Engine with the Compose v2 plugin, `make`, `sudo`.
+- The four password files listed above in `secrets/` (one password per file).
+- A host entry for the domain:
+
+```bash
+echo "127.0.0.1 mpoirier.42.fr" | sudo tee -a /etc/hosts
+```
+
+### Configuration
+
+Non-secret variables live in `srcs/.env`:
 
 ```env
+DATA_PATH=/home/mpoirier/data
 DOMAIN_NAME=mpoirier.42.fr
 MYSQL_DATABASE=wordpress
 MYSQL_USER=wp_user
-WP_ADMIN_USER=admin_mpoirier
-WP_ADMIN_EMAIL=admin@mpoirier.42.fr
 WP_TITLE=Inception
+WP_ADMIN_USER=admin_mpoirier
+WP_ADMIN_EMAIL=mpoirier@student.42nice.fr
+WP_USER=editorM
+WP_USER_EMAIL=mpoirier@student.42nice.fr
 ```
 
-Les mots de passe ne passent **pas** par le `.env` mais par des fichiers dans `secrets/`, montés en Docker secrets.
+Passwords are **not** in `.env`: they are read from `secrets/` and mounted as Docker secrets.
 
-## Build & lancement
+### Build and run
 
 ```bash
-make            # build + up -d
-make down       # arrête et supprime les conteneurs
-make clean      # + supprime images et volumes
-make fclean     # nettoyage complet (volumes, données WP/DB, réseau)
-make re         # fclean + make
+make          # create data folders, build images, start containers (detached)
+make down     # stop and remove containers (data is kept)
+make clean    # down + docker system prune -af
+make fclean   # clean + remove all volumes and the data folder
+make re       # fclean + make
 ```
 
-Le `Makefile` s'appuie en interne sur :
+> `clean` and `fclean` affect all of Docker on the machine, not only this project.
 
-```bash
-docker-compose -f srcs/docker-compose.yml up --build -d
-```
+Then open https://mpoirier.42.fr (accept the self-signed certificate warning) or https://mpoirier.42.fr/wp-admin for the back office.
 
-## Points clés du sujet à respecter
+More details: [USER_DOC.md](USER_DOC.md) for end users, [DEV_DOC.md](DEV_DOC.md) for developers.
 
-- Chaque service tourne dans son propre conteneur, construit à partir d'un Dockerfile (pas de `docker pull` d'image déjà faite pour le service lui-même, hors image de base).
-- Pas de `latest` comme tag d'image de base.
-- Pas de `network: host`, pas de `--link`.
-- Pas de process en boucle style `tail -f /dev/null` ou `sleep infinity` pour maintenir le conteneur en vie : chaque conteneur doit tourner via son process principal (PID 1) en foreground (ex : `php-fpm -F`, `nginx -g "daemon off;"`, `mysqld_safe`).
-- NGINX comme unique point d'entrée, en HTTPS uniquement (TLSv1.2 ou 1.3), sur le port 443.
-- Volumes pour la persistance : un pour la base de données, un pour les fichiers WordPress.
-- Redémarrage automatique des conteneurs en cas de crash (`restart: always` ou équivalent).
-- Réseau Docker dédié entre les conteneurs.
+## Technical comparisons
 
-## Accès
+### Virtual Machines vs Docker
 
-Ajouter dans `/etc/hosts` :
+| | Virtual Machine | Docker container |
+|---|---|---|
+| Isolation | Full hardware virtualization by a hypervisor; each VM runs its own complete OS and kernel | Process-level isolation (namespaces, cgroups); all containers share the host kernel |
+| Size | Gigabytes (full OS image) | Megabytes to a few hundred MB (only the userland and dependencies) |
+| Startup | Tens of seconds to minutes (OS boot) | Seconds or less (just starts a process) |
+| Resource usage | High: each VM reserves RAM/CPU for a whole OS | Low: only what the process uses |
+| Portability | Disk images, heavier to move and rebuild | Images built from a `Dockerfile`, reproducible and easy to share |
+| Security boundary | Stronger (separate kernels) | Weaker (shared kernel), mitigated by namespaces and capabilities |
 
-```
-127.0.0.1   login.42.fr
-```
+Why Docker here: the project needs three small, reproducible services that start fast and can be rebuilt from text files. A VM per service would be heavy and slow for no benefit. A VM remains the better choice when you need a different kernel or OS, or stronger isolation.
 
-Puis se rendre sur `https://mpoirier.42.fr`.
+### Secrets vs Environment variables
 
-## Bonus (optionnel)
+| | Docker secrets | Environment variables |
+|---|---|---|
+| Storage | Files mounted read-only in the container at `/run/secrets/<name>` | Key/value pairs injected into the process environment |
+| Visibility | Not shown in `docker inspect` nor in the image; not inherited by child processes | Visible in `docker inspect`, in `/proc/<pid>/environ`, and easily leaked in logs or crash dumps |
+| Source | Files on the host (here `secrets/*.txt`, git-ignored) | `.env` / `env_file` / `environment:` |
+| Best for | Passwords, API keys, certificates | Non-sensitive configuration (domain, usernames, titles) |
 
-- Redis (cache pour WordPress)
-- FTP server
-- Static website supplémentaire
-- Adminer
-- Tout autre service pertinent
+In this project: passwords go through Docker secrets (`db_password`, `db_root_password`, `wp_admin_password`, `wp_user_password`) and scripts read them with `cat /run/secrets/...`. Everything else (database name, domain, user names) goes through `.env`.
 
-## Notes
+### Docker network vs Host network
 
-- Les images de base et paquets doivent correspondre à la version stable de Debian/Alpine utilisée (pas de `docker pull` de l'image finale, tout se construit depuis une image de base minimale).
-- Bien gérer les healthchecks / dépendances (`depends_on`) entre MariaDB, WordPress et NGINX pour éviter les erreurs de démarrage.
+| | Docker (bridge) network | Host network |
+|---|---|---|
+| Network stack | Isolated virtual network with its own IPs | Container shares the host's network stack directly |
+| Service discovery | Built-in DNS: containers reach each other by service name (`mariadb`, `wordpress`) | None; everything is on the host's interfaces |
+| Port exposure | Explicit: only ports listed in `ports:` are published | All container ports are directly open on the host |
+| Isolation | Good: services not published are unreachable from outside | None: port conflicts and a larger attack surface |
+
+This project uses a dedicated bridge network (`inception`). Only NGINX publishes `443:443`; WordPress (`:9000`) and MariaDB (`:3306`) are reachable only from other containers on that network. `network: host` and `--link` are forbidden by the subject.
+
+### Docker volumes vs Bind mounts
+
+| | Docker (named) volumes | Bind mounts |
+|---|---|---|
+| Location | Managed by Docker (`/var/lib/docker/volumes/...`) | Any path on the host chosen by the user |
+| Management | `docker volume` commands, independent of host layout | Depends on the host filesystem and its permissions |
+| Portability | Works the same on any host with Docker | Tied to a specific host path |
+| Typical use | Persistent application data (databases) | Sharing source code or config files, or when data must live at a known host path |
+
+This project uses **named volumes backed by a bind** (`driver_opts: type: none, o: bind, device: ${DATA_PATH}/...`). They are declared and managed as Docker volumes (`docker volume ls`, referenced by name in Compose), while the data is stored at a known host location (`$DATA_PATH/mariadb` and `$DATA_PATH/wordpress`), as required by the subject. The `wordpress` volume is mounted in both the `wordpress` and `nginx` containers so NGINX can serve static files and hand PHP to PHP-FPM.
+
+## Resources
+
+- [Docker documentation](https://docs.docker.com/)
+- [Docker Compose file reference](https://docs.docker.com/compose/compose-file/)
+- [Dockerfile best practices](https://docs.docker.com/develop/develop-images/dockerfile_best-practices/)
+- [Docker secrets](https://docs.docker.com/engine/swarm/secrets/) and [Compose secrets](https://docs.docker.com/compose/how-tos/use-secrets/)
+- [NGINX documentation](https://nginx.org/en/docs/)
+- [WP-CLI handbook](https://make.wordpress.org/cli/handbook/)
+- [MariaDB documentation](https://mariadb.com/kb/en/documentation/)
+
+AI usage: Claude was used to help write the project documentation (`README.md`, `USER_DOC.md`, `DEV_DOC.md`) from the repository's actual configuration. All content was reviewed and its commands checked against the project files.
